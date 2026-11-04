@@ -33,15 +33,10 @@ parameters:
     default: ''
 
 variables:
-  AWS_REGION: ap-south-1
-  EKS_CLUSTER_NAME: dev-eks-cluster
+- group: DOCKERHUB_SECRETS
 
-  DEV_IMAGE: $(DOCKER_USERNAME)/azuredevops-db-dev
-  QA_IMAGE: $(DOCKER_USERNAME)/azuredevops-db-qa
-  UAT_IMAGE: $(DOCKER_USERNAME)/azuredevops-db-uat
-  PROD_IMAGE: $(DOCKER_USERNAME)/azuredevops-db-prod
-
-  TARGET_ENV: ${{ parameters.environment }}
+- name: TARGET_ENV
+  value: ${{ parameters.environment }}
 
 pool:
   name: WSL-Agent-Pool
