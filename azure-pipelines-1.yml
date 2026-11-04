@@ -245,7 +245,7 @@ steps:
         --create-namespace \
         -f "$VALUES_FILE" \
         --set frontend.enabled=true \
-        --set backend.enabled=false \
+        --set backend.enabled=true \
         --set database.enabled=false \
         --set configMap.enabled=false \
         --set secret.enabled=false \
