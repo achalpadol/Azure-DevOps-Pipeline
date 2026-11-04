@@ -36,10 +36,10 @@ variables:
   AWS_REGION: ap-south-1
   EKS_CLUSTER_NAME: dev-eks-cluster
 
-  DEV_IMAGE: $(DOCKER_USERNAME)/employee-db-dev
-  QA_IMAGE: $(DOCKER_USERNAME)/employee-db-qa
-  UAT_IMAGE: $(DOCKER_USERNAME)/employee-db-uat
-  PROD_IMAGE: $(DOCKER_USERNAME)/employee-db-prod
+  DEV_IMAGE: $(DOCKER_USERNAME)/azuredevops-db-dev
+  QA_IMAGE: $(DOCKER_USERNAME)/azuredevops-db-qa
+  UAT_IMAGE: $(DOCKER_USERNAME)/azuredevops-db-uat
+  PROD_IMAGE: $(DOCKER_USERNAME)/azuredevops-db-prod
 
   TARGET_ENV: ${{ parameters.environment }}
 
