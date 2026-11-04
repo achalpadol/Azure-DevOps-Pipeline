@@ -1,0 +1,281 @@
+# azure-pipelines-backend.yml
+# Backend build, promotion, and deployment to separate namespaces
+# in one shared EKS cluster.
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - backend/*
+      - backend/**
+      - dev-chart/*
+      - dev-chart/**
+      - azure-backend-pipeline.yaml
+
+pr: none
+
+parameters:
+  - name: environment
+    displayName: Target environment
+    type: string
+    default: dev
+    values:
+      - dev
+      - qa
+      - uat
+      - prod
+
+  - name: image_tag
+    displayName: Existing Git commit SHA to promote (required for QA/UAT/PROD)
+    type: string
+    default: ''
+
+variables:
+  AWS_REGION: ap-south-1
+  EKS_CLUSTER_NAME: dev-eks-cluster
+
+  DEV_IMAGE: $(DOCKER_USERNAME)/employee-backend-dev
+  QA_IMAGE: $(DOCKER_USERNAME)/employee-backend-qa
+  UAT_IMAGE: $(DOCKER_USERNAME)/employee-backend-uat
+  PROD_IMAGE: $(DOCKER_USERNAME)/employee-backend-prod
+
+  TARGET_ENV: ${{ parameters.environment }}
+
+pool:
+  name: WSL-Agent-Pool
+
+steps:
+  - checkout: self
+    clean: true
+
+  # Validate environment, values file, and promotion SHA.
+  - bash: |
+      set -euo pipefail
+
+      if [[ "$TARGET_ENV" != "dev" ]]; then
+        if [[ ! "$IMAGE_INPUT" =~ ^[a-fA-F0-9]{40}$ ]]; then
+          echo "##vso[task.logissue type=error]For QA, UAT, and PROD, provide the full 40-character backend image Git commit SHA in image_tag."
+          exit 1
+        fi
+      fi
+
+      VALUES_FILE="./dev-chart/values-${TARGET_ENV}.yaml"
+      if [[ ! -f "$VALUES_FILE" ]]; then
+        echo "##vso[task.logissue type=error]Values file not found: $VALUES_FILE"
+        exit 1
+      fi
+
+      echo "Target environment: $TARGET_ENV"
+      echo "Target namespace: app-${TARGET_ENV}"
+      echo "Values file: $VALUES_FILE"
+    displayName: Validate parameters and environment values
+    env:
+      TARGET_ENV: $(TARGET_ENV)
+      IMAGE_INPUT: ${{ parameters.image_tag }}
+
+  # AWS credentials are secret pipeline variables.
+  # Configure AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY.
+  # AWS_SESSION_TOKEN is only needed when using temporary credentials;
+  # if used, add it as a secret pipeline variable and map it below.
+  - bash: |
+      set -euo pipefail
+
+      aws sts get-caller-identity
+
+      aws eks describe-cluster \
+        --name "$EKS_CLUSTER_NAME" \
+        --region "$AWS_REGION" \
+        --query 'cluster.status' \
+        --output text
+
+      aws eks update-kubeconfig \
+        --region "$AWS_REGION" \
+        --name "$EKS_CLUSTER_NAME"
+
+      kubectl config current-context
+      kubectl get --raw=/version
+    displayName: Configure AWS access and connect to the shared EKS cluster
+    env:
+      AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
+      AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
+      AWS_DEFAULT_REGION: $(AWS_REGION)
+      AWS_REGION: $(AWS_REGION)
+      EKS_CLUSTER_NAME: $(EKS_CLUSTER_NAME)
+
+  # Create the selected environment namespace if it does not exist.
+  - bash: |
+      set -euo pipefail
+      NAMESPACE="app-${TARGET_ENV}"
+
+      if kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
+        echo "Namespace $NAMESPACE already exists."
+      else
+        kubectl create namespace "$NAMESPACE"
+      fi
+    displayName: Create target namespace if needed
+    env:
+      TARGET_ENV: $(TARGET_ENV)
+
+  # Create a Docker Registry service connection named dockerhub-connection.
+  - task: Docker@2
+    displayName: Login to Docker Hub
+    inputs:
+      command: login
+      containerRegistry: dockerhub-connection
+
+  # Build and push the backend image only for DEV.
+  - bash: |
+      set -euo pipefail
+
+      docker build \
+        --file ./backend/Dockerfile \
+        --tag "$(DEV_IMAGE):$(Build.SourceVersion)" \
+        ./backend
+
+      docker push "$(DEV_IMAGE):$(Build.SourceVersion)"
+    displayName: Build and push DEV backend image
+    condition: and(succeeded(), eq(variables['TARGET_ENV'], 'dev'))
+
+  # Select the source and destination repositories for image promotion.
+  - bash: |
+      set -euo pipefail
+
+      case "$TARGET_ENV" in
+        dev)
+          SOURCE_IMAGE="$DEV_IMAGE"
+          DEST_IMAGE="$DEV_IMAGE"
+          IMAGE_TAG="$BUILD_SOURCEVERSION"
+          ;;
+        qa)
+          SOURCE_IMAGE="$DEV_IMAGE"
+          DEST_IMAGE="$QA_IMAGE"
+          IMAGE_TAG="$IMAGE_INPUT"
+          ;;
+        uat)
+          SOURCE_IMAGE="$QA_IMAGE"
+          DEST_IMAGE="$UAT_IMAGE"
+          IMAGE_TAG="$IMAGE_INPUT"
+          ;;
+        prod)
+          SOURCE_IMAGE="$UAT_IMAGE"
+          DEST_IMAGE="$PROD_IMAGE"
+          IMAGE_TAG="$IMAGE_INPUT"
+          ;;
+        *)
+          echo "Invalid environment: $TARGET_ENV"
+          exit 1
+          ;;
+      esac
+
+      echo "##vso[task.setvariable variable=SOURCE_IMAGE]$SOURCE_IMAGE"
+      echo "##vso[task.setvariable variable=DEST_IMAGE]$DEST_IMAGE"
+      echo "##vso[task.setvariable variable=IMAGE_TAG]$IMAGE_TAG"
+
+      echo "Source image:      $SOURCE_IMAGE:$IMAGE_TAG"
+      echo "Destination image: $DEST_IMAGE:$IMAGE_TAG"
+    displayName: Select backend image repositories
+    env:
+      TARGET_ENV: $(TARGET_ENV)
+      IMAGE_INPUT: ${{ parameters.image_tag }}
+      BUILD_SOURCEVERSION: $(Build.SourceVersion)
+      DEV_IMAGE: $(DEV_IMAGE)
+      QA_IMAGE: $(QA_IMAGE)
+      UAT_IMAGE: $(UAT_IMAGE)
+      PROD_IMAGE: $(PROD_IMAGE)
+
+  # Promote the already-built image; do not rebuild in QA/UAT/PROD.
+  - bash: |
+      set -euo pipefail
+
+      docker pull "$SOURCE_IMAGE:$IMAGE_TAG"
+
+      if [[ "$SOURCE_IMAGE" != "$DEST_IMAGE" ]]; then
+        docker tag \
+          "$SOURCE_IMAGE:$IMAGE_TAG" \
+          "$DEST_IMAGE:$IMAGE_TAG"
+
+        docker push "$DEST_IMAGE:$IMAGE_TAG"
+        echo "Promoted backend image successfully."
+      else
+        echo "DEV image was built and pushed in the previous step."
+      fi
+
+      docker manifest inspect "$DEST_IMAGE:$IMAGE_TAG" >/dev/null
+      echo "Verified image: $DEST_IMAGE:$IMAGE_TAG"
+    displayName: Promote and verify backend image
+    env:
+      SOURCE_IMAGE: $(SOURCE_IMAGE)
+      DEST_IMAGE: $(DEST_IMAGE)
+      IMAGE_TAG: $(IMAGE_TAG)
+    condition: succeeded()
+
+  # Create/update the Docker Hub pull secret in the selected namespace.
+  - bash: |
+      set -euo pipefail
+
+      test -n "$DH_USER"
+      test -n "$DH_TOKEN"
+
+      kubectl create secret docker-registry dockerhub-secret \
+        --namespace="app-${TARGET_ENV}" \
+        --docker-server=https://index.docker.io/v1/ \
+        --docker-username="$DH_USER" \
+        --docker-password="$DH_TOKEN" \
+        --dry-run=client -o yaml | kubectl apply -f -
+    displayName: Configure Docker Hub pull secret
+    env:
+      TARGET_ENV: $(TARGET_ENV)
+      DH_USER: $(DOCKER_USERNAME)
+      DH_TOKEN: $(DOCKER_TOKEN)
+
+  - bash: |
+      set -euo pipefail
+      helm lint ./dev-chart -f "$VALUES_FILE"
+    displayName: Validate Helm chart
+    env:
+      VALUES_FILE: ./dev-chart/values-$(TARGET_ENV).yaml
+
+  - bash: |
+      set -euo pipefail
+
+      test -n "$DEST_IMAGE"
+      test -n "$IMAGE_TAG"
+
+      echo "Deploying backend image: ${DEST_IMAGE}:${IMAGE_TAG}"
+
+      helm upgrade --install employee-app ./dev-chart \
+        --namespace "app-${TARGET_ENV}" \
+        --create-namespace \
+        -f "$VALUES_FILE" \
+        --set frontend.enabled=false \
+        --set backend.enabled=true \
+        --set database.enabled=false \
+        --set ingress.enabled=false \
+        --set configMap.enabled=true \
+        --set secret.enabled=true \
+        --set-string backend.image.repository="$DEST_IMAGE" \
+        --set-string backend.image.tag="$IMAGE_TAG" \
+        --wait \
+        --timeout 10m
+    displayName: Deploy backend to the selected environment
+    env:
+      TARGET_ENV: $(TARGET_ENV)
+      VALUES_FILE: ./dev-chart/values-$(TARGET_ENV).yaml
+      DEST_IMAGE: $(DEST_IMAGE)
+      IMAGE_TAG: $(IMAGE_TAG)
+
+  - bash: |
+      set -euo pipefail
+
+      kubectl get deployments,pods,services \
+        -n "app-${TARGET_ENV}" || true
+
+      kubectl get events \
+        -n "app-${TARGET_ENV}" \
+        --sort-by=.metadata.creationTimestamp | tail -n 30 || true
+    displayName: Check backend deployment
+    condition: always()
+    env:
+      TARGET_ENV: $(TARGET_ENV)
