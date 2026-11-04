@@ -33,53 +33,43 @@ parameters:
     default: ''
 
 variables:
-- group: DOCKERHUB_SECRETS
+  - group: DOCKERHUB_SECRETS
 
-- name: TARGET_ENV
-  value: ${{ parameters.environment }}
+  - name: TARGET_ENV
+    value: ${{ parameters.environment }}
 
 pool:
   name: WSL-Agent-Pool
 
 steps:
-
   - checkout: self
     clean: true
 
-  # Validate environment and promotion SHA.
+  # Validate the selected environment and promotion tag.
   - bash: |
       set -euo pipefail
 
       if [[ "$TARGET_ENV" != "dev" ]]; then
         if [[ ! "$IMAGE_INPUT" =~ ^[a-fA-F0-9]{40}$ ]]; then
-          echo "##vso[task.logissue type=error]Provide the full 40-character frontend image Git commit SHA."
+          echo "##vso[task.logissue type=error]For QA, UAT, and PROD, provide the full 40-character Git commit SHA in the image_tag parameter."
           exit 1
         fi
       fi
 
-      VALUES_FILE="./dev-chart/values-${TARGET_ENV}.yaml"
-
-      if [[ ! -f "$VALUES_FILE" ]]; then
-        echo "##vso[task.logissue type=error]Values file not found: $VALUES_FILE"
-        exit 1
-      fi
+      test -f "./dev-chart/values-${TARGET_ENV}.yaml"
 
       echo "Target environment: $TARGET_ENV"
-      echo "Target namespace: app-${TARGET_ENV}"
-      echo "Values file: $VALUES_FILE"
-
+      echo "Kubernetes namespace: app-${TARGET_ENV}"
     displayName: Validate parameters and environment values
     env:
       TARGET_ENV: $(TARGET_ENV)
       IMAGE_INPUT: ${{ parameters.image_tag }}
 
-  # Configure AWS and connect to EKS.
+  # Configure AWS access and connect to EKS.
   - bash: |
       set -euo pipefail
 
       aws sts get-caller-identity
-
-      echo "Checking EKS cluster..."
 
       aws eks describe-cluster \
         --name "$EKS_CLUSTER_NAME" \
@@ -93,13 +83,12 @@ steps:
 
       kubectl config current-context
       kubectl get --raw=/version
-
     displayName: Configure AWS access and connect to the shared EKS cluster
     env:
       AWS_REGION: $(AWS_REGION)
       EKS_CLUSTER_NAME: $(EKS_CLUSTER)
 
-  # Create namespace.
+  # Create the target namespace if it does not exist.
   - bash: |
       set -euo pipefail
 
@@ -110,38 +99,27 @@ steps:
       else
         kubectl create namespace "$NAMESPACE"
       fi
-
     displayName: Create target namespace if needed
     env:
       TARGET_ENV: $(TARGET_ENV)
 
-  # Docker Hub authentication.
+  # Authenticate with Docker Hub.
   - task: Docker@2
     displayName: Login to Docker Hub
     inputs:
       command: login
       containerRegistry: dockerhub-connection
 
-  # Build and push frontend image only for DEV.
+  # Build and push the frontend image only for DEV.
   - bash: |
       set -euo pipefail
 
-      IMAGE="$DEV_IMAGE"
-      TAG="$BUILD_SOURCEVERSION"
-
-      if [[ -z "$IMAGE" ]]; then
-        echo "ERROR: DEV_IMAGE is empty"
-        exit 1
-      fi
-
-      echo "Building frontend image: ${IMAGE}:${TAG}"
-
       docker build \
         --file ./frontend/Dockerfile \
-        --tag "${IMAGE}:${TAG}" \
+        --tag "${DEV_IMAGE}:${BUILD_SOURCEVERSION}" \
         ./frontend
 
-      docker push "${IMAGE}:${TAG}"
+      docker push "${DEV_IMAGE}:${BUILD_SOURCEVERSION}"
 
     displayName: Build and push DEV frontend image
     condition: and(succeeded(), eq(variables['TARGET_ENV'], 'dev'))
@@ -149,7 +127,7 @@ steps:
       DEV_IMAGE: $(FRONTEND_DEV_IMAGE)
       BUILD_SOURCEVERSION: $(Build.SourceVersion)
 
-  # Select source and destination image repositories.
+  # Select source repository, destination repository, and image tag.
   - bash: |
       set -euo pipefail
 
@@ -159,25 +137,21 @@ steps:
           DEST_IMAGE="$DEV_IMAGE"
           IMAGE_TAG="$BUILD_SOURCEVERSION"
           ;;
-
         qa)
           SOURCE_IMAGE="$DEV_IMAGE"
           DEST_IMAGE="$QA_IMAGE"
           IMAGE_TAG="$IMAGE_INPUT"
           ;;
-
         uat)
           SOURCE_IMAGE="$QA_IMAGE"
           DEST_IMAGE="$UAT_IMAGE"
           IMAGE_TAG="$IMAGE_INPUT"
           ;;
-
         prod)
           SOURCE_IMAGE="$UAT_IMAGE"
           DEST_IMAGE="$PROD_IMAGE"
           IMAGE_TAG="$IMAGE_INPUT"
           ;;
-
         *)
           echo "Invalid environment: $TARGET_ENV"
           exit 1
@@ -188,10 +162,10 @@ steps:
       echo "##vso[task.setvariable variable=DEST_IMAGE]$DEST_IMAGE"
       echo "##vso[task.setvariable variable=IMAGE_TAG]$IMAGE_TAG"
 
-      echo "Source image: $SOURCE_IMAGE:$IMAGE_TAG"
+      echo "Source image:      $SOURCE_IMAGE:$IMAGE_TAG"
       echo "Destination image: $DEST_IMAGE:$IMAGE_TAG"
 
-    displayName: Select frontend image repositories
+    displayName: Select image repositories for the environment
     env:
       TARGET_ENV: $(TARGET_ENV)
       IMAGE_INPUT: ${{ parameters.image_tag }}
@@ -201,24 +175,18 @@ steps:
       UAT_IMAGE: $(FRONTEND_UAT_IMAGE)
       PROD_IMAGE: $(FRONTEND_PROD_IMAGE)
 
-  # Promote existing image without rebuilding.
+  # Promote the existing image for QA, UAT, and PROD.
   - bash: |
       set -euo pipefail
 
       docker pull "$SOURCE_IMAGE:$IMAGE_TAG"
 
       if [[ "$SOURCE_IMAGE" != "$DEST_IMAGE" ]]; then
-
         docker tag \
           "$SOURCE_IMAGE:$IMAGE_TAG" \
           "$DEST_IMAGE:$IMAGE_TAG"
 
         docker push "$DEST_IMAGE:$IMAGE_TAG"
-
-        echo "Frontend image promoted successfully."
-
-      else
-        echo "DEV frontend image was already built and pushed."
       fi
 
       docker manifest inspect "$DEST_IMAGE:$IMAGE_TAG" >/dev/null
@@ -226,12 +194,13 @@ steps:
       echo "Verified image: $DEST_IMAGE:$IMAGE_TAG"
 
     displayName: Promote and verify frontend image
+    condition: succeeded()
     env:
       SOURCE_IMAGE: $(SOURCE_IMAGE)
       DEST_IMAGE: $(DEST_IMAGE)
       IMAGE_TAG: $(IMAGE_TAG)
 
-  # Configure Docker Hub pull secret.
+  # Create or update the Docker Hub pull secret.
   - bash: |
       set -euo pipefail
 
@@ -251,7 +220,7 @@ steps:
       DH_USER: $(DOCKER_USERNAME)
       DH_TOKEN: $(DOCKER_TOKEN)
 
-  # Validate Helm chart.
+  # Validate the Helm chart.
   - bash: |
       set -euo pipefail
 
@@ -261,25 +230,20 @@ steps:
     env:
       VALUES_FILE: ./dev-chart/values-$(TARGET_ENV).yaml
 
-  # Deploy frontend to selected environment.
+  # Deploy the frontend.
   - bash: |
       set -euo pipefail
-
-      test -n "$DEST_IMAGE"
-      test -n "$IMAGE_TAG"
-
-      echo "Deploying frontend image: ${DEST_IMAGE}:${IMAGE_TAG}"
 
       helm upgrade --install employee-app ./dev-chart \
         --namespace "app-${TARGET_ENV}" \
         --create-namespace \
         -f "$VALUES_FILE" \
-        --set frontend.enabled=true \
+        --set frontend.enabled=false \
         --set backend.enabled=false \
         --set database.enabled=false \
-        --set ingress.enabled=true \
-        --set configMap.enabled=false \
-        --set secret.enabled=false \
+        --set configMap.enabled=true \
+        --set secret.enabled=true \
+        --set ingress.enabled=false \
         --set-string frontend.image.repository="$DEST_IMAGE" \
         --set-string frontend.image.tag="$IMAGE_TAG" \
         --wait \
@@ -292,9 +256,23 @@ steps:
       DEST_IMAGE: $(DEST_IMAGE)
       IMAGE_TAG: $(IMAGE_TAG)
 
-  # Verify deployment.
+  # Verify the frontend deployment.
   - bash: |
       set -euo pipefail
+
+      echo "Frontend deployment status:"
+
+      kubectl rollout status deployment/frontend \
+        -n "app-${TARGET_ENV}" \
+        --timeout=180s
+
+      echo "Frontend image:"
+
+      kubectl get deployment frontend \
+        -n "app-${TARGET_ENV}" \
+        -o jsonpath='{.spec.template.spec.containers[0].image}'
+
+      echo ""
 
       kubectl get deployments,pods,services \
         -n "app-${TARGET_ENV}" || true
