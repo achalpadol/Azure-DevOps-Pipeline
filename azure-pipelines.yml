@@ -113,7 +113,9 @@ steps:
   # Build and push the backend image only for DEV.
   - bash: |
       set -euo pipefail
-
+      echo "Backend image repository: ${DEV_IMAGE}"
+      echo "Git commit SHA: ${BUILD_SOURCEVERSION}"
+      
       docker build \
         --file ./backend/Dockerfile \
         --tag "${DEV_IMAGE}:${BUILD_SOURCEVERSION}" \
