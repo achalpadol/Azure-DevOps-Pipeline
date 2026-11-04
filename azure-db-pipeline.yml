@@ -72,21 +72,21 @@ steps:
       aws sts get-caller-identity
 
       aws eks describe-cluster \
-        --name "$EKS_CLUSTER_NAME" \
+        --name "$EKS_CLUSTER" \
         --region "$AWS_REGION" \
         --query 'cluster.status' \
         --output text
 
       aws eks update-kubeconfig \
         --region "$AWS_REGION" \
-        --name "$EKS_CLUSTER_NAME"
+        --name "$EKS_CLUSTER"
 
       kubectl config current-context
       kubectl get --raw=/version
     displayName: Configure AWS access and connect to the shared EKS cluster
     env:
       AWS_REGION: $(AWS_REGION)
-      EKS_CLUSTER_NAME: $(EKS_CLUSTER_NAME)
+      EKS_CLUSTER_NAME: $(EKS_CLUSTER)
 
   - bash: |
       set -euo pipefail
