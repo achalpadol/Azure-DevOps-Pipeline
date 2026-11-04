@@ -118,10 +118,10 @@ steps:
       
       docker build \
         --file ./backend/Dockerfile \
-        --tag "${DEV_IMAGE}:${BUILD_SOURCEVERSION}" \
+        --tag "${BACKEND_DEV_IMAGE}:${BUILD_SOURCEVERSION}" \
         ./backend
 
-      docker push "${DEV_IMAGE}:${BUILD_SOURCEVERSION}"
+      docker push "${BACKEND_DEV_IMAGE}:${BUILD_SOURCEVERSION}"
 
     displayName: Build and push DEV backend image
     condition: and(succeeded(), eq(variables['TARGET_ENV'], 'dev'))
@@ -135,23 +135,23 @@ steps:
 
       case "$TARGET_ENV" in
         dev)
-          SOURCE_IMAGE="$DEV_IMAGE"
-          DEST_IMAGE="$DEV_IMAGE"
+          SOURCE_IMAGE="$BACKEND_DEV_IMAGE"
+          DEST_IMAGE="$BACKEND_DEV_IMAGE"
           IMAGE_TAG="$BUILD_SOURCEVERSION"
           ;;
         qa)
-          SOURCE_IMAGE="$DEV_IMAGE"
-          DEST_IMAGE="$QA_IMAGE"
+          SOURCE_IMAGE="$BACKEND_DEV_IMAGE"
+          DEST_IMAGE="$BACKEND_QA_IMAGE"
           IMAGE_TAG="$IMAGE_INPUT"
           ;;
         uat)
-          SOURCE_IMAGE="$QA_IMAGE"
-          DEST_IMAGE="$UAT_IMAGE"
+          SOURCE_IMAGE="$BACKEND_QA_IMAGE"
+          DEST_IMAGE="$BACKEND_UAT_IMAGE"
           IMAGE_TAG="$IMAGE_INPUT"
           ;;
         prod)
-          SOURCE_IMAGE="$UAT_IMAGE"
-          DEST_IMAGE="$PROD_IMAGE"
+          SOURCE_IMAGE="$BACKEND_UAT_IMAGE"
+          DEST_IMAGE="$BACKEND_PROD_IMAGE"
           IMAGE_TAG="$IMAGE_INPUT"
           ;;
         *)
@@ -172,10 +172,10 @@ steps:
       TARGET_ENV: $(TARGET_ENV)
       IMAGE_INPUT: ${{ parameters.image_tag }}
       BUILD_SOURCEVERSION: $(Build.SourceVersion)
-      DEV_IMAGE: $(BACKEND_DEV_IMAGE)
-      QA_IMAGE: $(BACKEND_QA_IMAGE)
-      UAT_IMAGE: $(BACKEND_UAT_IMAGE)
-      PROD_IMAGE: $(BACKEND_PROD_IMAGE)
+      BACKEND_DEV_IMAGE: $(BACKEND_DEV_IMAGE)
+      BACKEND_QA_IMAGE: $(BACKEND_QA_IMAGE)
+      BACKEND_UAT_IMAGE: $(BACKEND_UAT_IMAGE)
+      BACKEND_PROD_IMAGE: $(BACKEND_PROD_IMAGE)
 
   # Promote the existing image for QA, UAT, and PROD.
   - bash: |
