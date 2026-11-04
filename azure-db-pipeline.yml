@@ -90,9 +90,6 @@ steps:
       kubectl get --raw=/version
     displayName: Configure AWS access and connect to the shared EKS cluster
     env:
-      AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
-      AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
-      AWS_SESSION_TOKEN: $(AWS_SESSION_TOKEN)
       AWS_REGION: $(AWS_REGION)
       EKS_CLUSTER_NAME: $(EKS_CLUSTER_NAME)
 
